@@ -1,0 +1,313 @@
+<html>
+<head>
+	<title>Chat</title>
+</head>
+<body>
+
+	<button id="sendTo">Wyslij wiadomosc</button>
+
+	<button id="createConversation">Utworz rozmowe z userem</button>
+
+	<button id="createGroup">Otwórz grupę</button>
+
+	<ul></ul>
+
+	<script src="http://code.jquery.com/jquery-1.11.0.min.js"></script>
+	<!-- <script src="https://chatter.onxwork.pl/socket.io/socket.io.js"></script> -->
+	<script src="http://localhost:3000/socket.io/socket.io.js"></script>
+	<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+  
+	<script>
+
+		console.log('test')
+
+	// const chatterUrl = 'https://chatter.onxwork.pl';
+	const chatterUrl = 'http://localhost:3000';
+
+	// const laravelUrl = 'https://api.events-app.net';
+	const laravelUrl = 'http://partyapp.localhost';
+
+	window.email = prompt("$onx@example.com\n $ ==>") + "onx@example.com"
+
+	var websocket = io.connect(chatterUrl);
+
+
+
+	function log(text){
+		$('<li>').text(text).appendTo('ul');
+	}
+	
+	async function loginToApp() {
+		const email = window.email
+		return await axios.post(laravelUrl + '/api/mobile/auth/login', {
+			email,
+			password: "privateonxpassword"
+		})
+		.then(({data}) => {
+			log("Zalogowany do laravel jako: " + email)
+			return data
+		})
+	}
+
+	async function getSocketJwt() {
+		return await axios.post(laravelUrl + '/api/mobile/chat/login', 
+			{},
+			{
+				headers: {
+			    	Authorization : `Bearer ${window.auth}`
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+	}
+
+
+	async function getUserToken(userId)
+	{
+		return await axios.get(laravelUrl + '/api/mobile/chat/users/' + JSON.stringify([userId]), 
+			{
+				headers: {
+			    	Authorization : `Bearer ${window.auth}`
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+	}
+
+	async function updatePublicToken()
+	{
+
+		window.crypto.subtle.exportKey('jwk', publicKey)
+		.then((jwkPublicKey) => {
+			// Teraz mamy klucz publiczny w formacie JSON Web Key (JWK).
+			// Możemy go przekształcić na tekst, np. w formacie JSON.
+			const publicKeyText = JSON.stringify(jwkPublicKey);
+
+			// Możesz zapisać publicKeyText w bazie danych lub gdziekolwiek indziej.
+			console.log('Klucz publiczny w formacie tekstowym:', publicKeyText);
+
+			axios.put(laravelUrl + '/api/mobile/chat/public-key',
+				{
+					public_key: publicKeyText
+				},
+				{
+					headers: {
+				    	Authorization : `Bearer ${window.auth}`
+				    }
+				}
+			)
+
+		})
+		.catch((error) => {
+			console.error('Błąd eksportu klucza publicznego:', error);
+		});
+
+	}
+
+
+	async function getLastConversations(userId)
+	{
+		return await axios.get(chatterUrl + '/conversations', 
+			{
+				headers: {
+			    	Authorization : window.authorizationHeader
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+	}
+
+	async function getConversationMessagesById(conversationId) {
+		return await axios.get(chatterUrl + '/conversations/' + conversationId, 
+			{
+				headers: {
+			    	Authorization : window.authorizationHeader
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+	}
+
+
+	websocket.on('connect', async function(socket){
+		console.log('connected')
+
+
+		if (window.crypto && window.crypto.subtle) {
+		  // Algorytm do generowania kluczy (np. RSA-OAEP).
+		  const algorithm = {
+		    name: 'RSA-OAEP',
+		    modulusLength: 2048,
+		    publicExponent: new Uint8Array([0x01, 0x00, 0x01]),
+		    hash: { name: 'SHA-256' } // Dodaj odpowiedni hash (SHA-256).
+		  };
+
+		  // Wygeneruj parę kluczy.
+		  await window.crypto.subtle.generateKey(algorithm, true, ['encrypt', 'decrypt'])
+		    .then((keyPair) => {
+		      // Otrzymujemy klucz publiczny i prywatny.
+		      window.publicKey = keyPair.publicKey;
+		      window.privateKey = keyPair.privateKey;
+
+		      // Możesz teraz użyć publicKey i privateKey w swojej aplikacji.
+		      console.log('Klucz publiczny:', window.publicKey);
+		      console.log('Klucz prywatny:', window.privateKey);
+		    })
+		    .catch((error) => {
+		      console.error('Błąd generowania kluczy:', error);
+		    });
+		} else {
+		  console.error('Twoja przeglądarka nie obsługuje Web Crypto API.');
+		}
+
+
+		const {
+			token
+		} = await loginToApp();
+
+		window.auth = token
+
+		updatePublicToken()
+
+		const jwt = await getSocketJwt()
+
+		console.log('jwt', jwt)
+
+		websocket.emit('login', {
+			token: jwt.token,
+			publicKey,
+		});
+	});
+
+	websocket.on('login success', async function({type, accessToken}){
+		console.log('zalogowano pomyslnie do socket')
+		window.authorizationHeader = `${type} ${accessToken}`
+		log('Zalogowano do WS')
+
+		const lastConversations = await getLastConversations()
+		console.log('lastConversations', lastConversations)
+
+		if(lastConversations.length > 0) {
+			const conversationMessages = await getConversationMessagesById(lastConversations[0]._id)
+			websocket.emit('typing', lastConversations[0]._id)
+		}
+
+		log("Wczytano ostatnie wiadomosci: " + JSON.stringify(lastConversations))
+
+	})
+
+	websocket.on('login fail', function(){
+		console.log('blad logowania')
+	})
+
+	websocket.on('new message', function(data){
+		console.log('new message', data)
+
+		window.crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privateKey, data.message)
+		.then((decryptedBuffer) => {
+			// Otrzymujemy odszyfrowaną wiadomość jako ArrayBuffer.
+
+			// Przekształć ArrayBuffer z powrotem na tekst.
+			const decryptedMessage = new TextDecoder().decode(decryptedBuffer);
+
+			// Teraz możesz użyć decryptedMessage w swojej aplikacji.
+			console.log('Odszyfrowana wiadomość:', decryptedMessage);
+		})
+			.catch((error) => {
+			console.error('Błąd deszyfrowania wiadomości:', error);
+		});
+
+		log(`Nowa wiadomosc od: ${data.sender_name} ---> ${data.message}`)
+	})
+
+
+	websocket.on('typing', function(data) {
+		console.log('typing .... ', data)
+	})
+
+	$('#sendTo').click(async function(){
+
+		const message = "Siemka uzytkowniku 31 -> " + (new Date()).toString();
+
+		const messageBuffer = new TextEncoder().encode(message);
+
+		// Użyj klucza publicznego do zaszyfrowania wiadomości.
+		window.crypto.subtle.encrypt({ name: 'RSA-OAEP' }, recipientPublicKey, messageBuffer)
+		  .then((encryptedMessage) => {
+		    
+		    websocket.emit('send message', {
+				message: encryptedMessage,
+				groupId: window.conversation._id,
+			})
+
+		  })
+		  .catch((error) => {
+		    console.error('Błąd szyfrowania wiadomości:', error);
+		  });
+	});
+
+	$('#createGroup').click(async function(){
+		const userJwtTokens = await Promise.all([51,52,53,54,55,56,57,57,57,21,21].map(async (id) => (await getUserToken(id)).userToken))
+
+		return await axios.post(chatterUrl + '/groups',
+			{
+				name: "Grupa 123 " + (new Date()).toString(),
+				users: userJwtTokens,
+			},
+			{
+				headers: {
+			    	Authorization : window.authorizationHeader
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+
+	})
+
+
+	$('#createConversation').click(async function(){
+		const user = (await getUserToken(31)).data[31]
+		const userJwtToken = user.jwt
+
+		window.crypto.subtle.importKey('jwk', user.public_key, { name: 'RSA-OAEP', hash: { name: 'SHA-256' } }, false, ['encrypt'])
+		  .then((publicKey) => {
+		   
+		    console.log('Zaimportowany klucz publiczny:', publicKey);
+
+		    window.recipientPublicKey = publicKey;
+
+		  })
+		  .catch((error) => {
+		    console.error('Błąd importu klucza publicznego:', error);
+		  });
+
+		window.conversation =  await axios.post(chatterUrl + '/conversations',
+			{
+				recipient: userJwtToken,
+			},
+			{
+				headers: {
+			    	Authorization : window.authorizationHeader
+			    }
+			}
+		)
+		.then(({data}) => {
+			return data
+		})
+
+	})
+
+
+	</script>
+</body>
+</html>
